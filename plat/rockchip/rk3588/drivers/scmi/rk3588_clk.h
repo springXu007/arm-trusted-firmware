@@ -50,6 +50,8 @@
 #define SCMI_OTPC_AUTO_RD		38
 #define SCMI_OTPC_ARB			39
 #define SCMI_CCLK_EMMC			40
+/* SDIO 控制器（0xfe2d0000）的卡时钟，本补丁新增 */
+#define SCMI_CCLK_SDIO			41
 
 /******** DSUCRU **************************************/
 #define DSUCRU_CLKSEL_CON(n)		(0x0300 + (n) * 4)

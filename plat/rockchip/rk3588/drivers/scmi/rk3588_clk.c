@@ -9,6 +9,7 @@
 
 #include <drivers/delay_timer.h>
 #include <drivers/scmi.h>
+#include <common/debug.h>
 #include <lib/mmio.h>
 #include <platform_def.h>
 
@@ -281,6 +282,17 @@ static unsigned long rk3588_sbus_rates[] = {
 static unsigned long rk3588_sdmmc_rates[] = {
 	400000, 24000000, 50000000, 100000000, 150000000, 200000000,
 	300000000, 400000000, 600000000, 700000000
+};
+
+/*
+ * SDIO 卡时钟（cclk_src_sdio）频率表。
+ * 400KHz 用于卡识别/初始化阶段；25MHz 为默认低速（DS）；
+ * 50MHz 为高速（HS，WiFi 模块最常用档）；100~200MHz 为 SDR50/SDR104
+ * （视模块支持情况与走线质量启用）。
+ */
+static unsigned long rk3588_sdio_rates[] = {
+	400000, 24000000, 25000000, 50000000, 100000000,
+	150000000, 200000000
 };
 
 static unsigned long rk3588_emmc_rates[] = {
@@ -1221,6 +1233,112 @@ static int clk_scmi_cclk_sdmmc_set_status(rk_scmi_clock_t *clock, bool status)
 		      BITS_WITH_WMASK(!status, 0x1U, 4));
 	return 0;
 }
+
+/*
+ * ==================== SDIO 卡时钟（cclk_src_sdio）实现（本补丁新增） ====================
+ *
+ * 硬件寄存器布局（参考 Linux 内核 drivers/clk/rockchip/clk-rk3588.c）：
+ *   cclk_src_sdio（卡时钟）：
+ *     - 时钟源选择：CLKSEL_CON(172) bit[9:8]，0=GPLL(1188MHz) 1=CPLL(1500MHz) 2=xin24m(24MHz)
+ *     - 6 位分频器：CLKSEL_CON(172) bit[7:2]，实际频率 = 源频率 / (div + 1)
+ *     - 时钟门控  ：CLKGATE_CON(75) bit 3，写 1 关闭、写 0 打开
+ *   hclk_sdio_root（总线时钟）：
+ *     - 时钟源选择：CLKSEL_CON(172) bit[1:0]（200M/100M/50M/24M）
+ *     - 时钟门控  ：CLKGATE_CON(75) bit 0
+ *
+ * 【重要】SDIO 的时钟寄存器位于【主 CRU】(CRU_BASE = 0xfd7c0000)，
+ * 而 SDMMC 的时钟寄存器位于 SCRU (0xfd7d0000)，两者完全不同，不可混用！
+ *
+ * 换算为 ATF 宏（soc.h 中定义 CRU_CLKSEL_CON(n)=n*4+0x300，CRU_CLKGATE_CON(n)=n*4+0x800）：
+ *   CRU_CLKSEL_CON(172) = 172*4 + 0x300 = 0x5B0（时钟选择/分频寄存器偏移）
+ *   CRU_CLKGATE_CON(75) =  75*4 + 0x800 = 0x92C（时钟门控寄存器偏移）
+ */
+
+static unsigned long clk_scmi_cclk_sdio_get_rate(rk_scmi_clock_t *clock)
+{
+	int div;
+	uint32_t src;
+
+	/* 读取 CLKSEL_CON(172)，提取 bit[9:8] 的时钟源选择 */
+	src = mmio_read_32(CRU_BASE + CRU_CLKSEL_CON(172)) & 0x0300;
+	src = src >> 8;
+	/* 提取 bit[7:2] 的 6 位分频值（实际分频 = div + 1） */
+	div = mmio_read_32(CRU_BASE + CRU_CLKSEL_CON(172)) & 0x00fc;
+	div = div >> 2;
+	if (src == 1) {
+		return CPLL_RATE / (div + 1);	/* 源为 CPLL */
+	} else if (src == 2) {
+		return OSC_HZ / (div + 1);	/* 源为 24MHz 晶振 */
+	} else {
+		return GPLL_RATE / (div + 1);	/* 源为 GPLL */
+	}
+}
+
+static int clk_scmi_cclk_sdio_set_rate(rk_scmi_clock_t *clock, unsigned long rate)
+{
+	int div;
+
+	NOTICE("SDIO_SLK_PATCH: cclk_sdio -> %lu Hz\n", rate);
+	/*
+	 * 按"能否整除"优先选择时钟源（策略与 SDMMC 实现保持一致）：
+	 *   1) 24MHz 晶振可整除 -> 优先（400KHz 初始化频率走此路径）
+	 *   2) CPLL(1500MHz) 可整除 -> 次选（注意：SDIO 的 mux 没有 SPLL 输入，
+	 *      这一点与 SDMMC 不同，SDMMC 的次选是 SPLL）
+	 *   3) 兜底 GPLL(1188MHz)
+	 * 写寄存器采用 HIWORD_MASK 机制（BITS_WITH_WMASK）。
+	 */
+	if ((OSC_HZ % rate) == 0) {
+		div = DIV_ROUND_UP(OSC_HZ, rate);
+		mmio_write_32(CRU_BASE + CRU_CLKSEL_CON(172),
+			      CLKDIV_6BITS_SHF(div - 1, 2) |
+			      BITS_WITH_WMASK(2U, 0x3U, 8));
+	} else if ((CPLL_RATE % rate) == 0) {
+		div = DIV_ROUND_UP(CPLL_RATE, rate);
+		mmio_write_32(CRU_BASE + CRU_CLKSEL_CON(172),
+			      CLKDIV_6BITS_SHF(div - 1, 2) |
+			      BITS_WITH_WMASK(1U, 0x3U, 8));
+	} else {
+		div = DIV_ROUND_UP(GPLL_RATE, rate);
+		mmio_write_32(CRU_BASE + CRU_CLKSEL_CON(172),
+			      CLKDIV_6BITS_SHF(div - 1, 2) |
+			      BITS_WITH_WMASK(0U, 0x3U, 8));
+	}
+
+	/*
+	 * 确保时钟门控打开（该 CRU 的 gate 语义为"写 1 关闭"，故写 0 表示开启）：
+	 *   - bit 3：cclk_src_sdio 卡时钟门控
+	 *   - bit 0：hclk_sdio_root 总线时钟门控
+	 *
+	 * 原因：Windows 的 dwcmshc 驱动只调用 CLOCK_RATE_SET（SMC 0x82000021），
+	 * 不会单独调用时钟使能。SDMMC 能工作是因为 U-Boot 初始化 SD 卡时已经
+	 * 打开了它的门控；而 SDIO（WiFi）如果 U-Boot 从未使用过，门控状态
+	 * 不确定，因此在设置频率时顺带强制打开，保证可靠。
+	 */
+	mmio_write_32(CRU_BASE + CRU_CLKGATE_CON(75),
+		      BITS_WITH_WMASK(0U, 0x1U, 3) |
+		      BITS_WITH_WMASK(0U, 0x1U, 0));
+
+	return 0;
+}
+
+static int clk_scmi_cclk_sdio_set_status(rk_scmi_clock_t *clock, bool status)
+{
+	/*
+	 * status = true  -> 使能（gate 位写 0）
+	 * status = false -> 关闭（gate 位写 1）
+	 * 同时控制 cclk（bit 3）与 hclk_sdio_root（bit 0）两个门控。
+	 */
+	mmio_write_32(CRU_BASE + CRU_CLKGATE_CON(75),
+		      BITS_WITH_WMASK(!status, 0x1U, 3) |
+		      BITS_WITH_WMASK(!status, 0x1U, 0));
+	return 0;
+}
+
+static const struct rk_clk_ops clk_scmi_cclk_sdio_ops = {
+	.get_rate = clk_scmi_cclk_sdio_get_rate,
+	.set_rate = clk_scmi_cclk_sdio_set_rate,
+	.set_status = clk_scmi_cclk_sdio_set_status,
+};
 
 static unsigned long clk_scmi_dclk_sdmmc_get_rate(rk_scmi_clock_t *clock)
 {
@@ -2411,6 +2529,8 @@ rk_scmi_clock_t clock_table[] = {
 	RK3588_SCMI_CLOCK(SCMI_OTPC_AUTO_RD, "scmi_otpc_rd", &clk_scmi_otpc_rd_ops, NULL, 0, false),
 	RK3588_SCMI_CLOCK(SCMI_OTPC_ARB, "scmi_otpc_arb", &clk_scmi_otpc_arb_ops, NULL, 0, false),
 	RK3588_SCMI_CLOCK(SCMI_CCLK_EMMC, "scmi_cclk_emmc", &clk_scmi_cclk_emmc_ops, rk3588_emmc_rates, ARRAY_SIZE(rk3588_emmc_rates), false),
+	/* SDIO 控制器卡时钟（本补丁新增，供 Windows dwcmshc 驱动经 SIP 服务调用） */
+	RK3588_SCMI_CLOCK(SCMI_CCLK_SDIO, "scmi_cclk_sdio", &clk_scmi_cclk_sdio_ops, rk3588_sdio_rates, ARRAY_SIZE(rk3588_sdio_rates), false),
 };
 
 size_t rockchip_scmi_clock_count(unsigned int agent_id __unused)

@@ -135,6 +135,7 @@ void bl31_main(void)
 	NOTICE("BL31: %s\n", build_version_string);
 	NOTICE("BL31: %s\n", build_message);
 
+	NOTICE("BL31: Built by springXu at %s %s\n", __DATE__, __TIME__);
 #if FEATURE_DETECTION
 	/* Detect if features enabled during compilation are supported by PE. */
 	detect_arch_features();

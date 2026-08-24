@@ -145,6 +145,14 @@ static int get_sdmmc_card_clock_scmi_id(uintptr_t controller_address,
 			return RK_SIP_E_SUCCESS;
 		}
 		break;
+	case SDIO_BASE:
+		switch (id) {
+		case RK_SIP_SDMMC_CLOCK_ID_MSHC_CIU:
+			*scmi_id = SCMI_CCLK_SDIO;
+			NOTICE("SDIO_CLK_PATCH: SDIO clock service active\n");
+			return RK_SIP_E_SUCCESS;
+		}
+		break;
 	case EMMC_BASE:
 		switch (id) {
 		case RK_SIP_SDMMC_CLOCK_ID_EMMC_CCLK:
