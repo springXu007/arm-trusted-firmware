@@ -274,6 +274,7 @@ static int rk_sip_sdmmc_regulator_voltage_set(uintptr_t controller_address,
 
 	switch (controller_address) {
 	case SDMMC_BASE:
+	case SDIO_BASE:	/* W5-A: SDIO 控制器走同样的 PLDO5 信号电压路径 */
 		switch (id) {
 		case RK_SIP_SDMMC_REGULATOR_ID_SIGNAL:
 			ret = plat_rk3588_sdmmc_set_signal_voltage(microvolts);
