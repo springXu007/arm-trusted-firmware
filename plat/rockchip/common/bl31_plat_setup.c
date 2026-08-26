@@ -61,12 +61,21 @@ void bl31_early_platform_setup2(u_register_t arg0, u_register_t arg1,
 
 	params_early_setup(arg1);
 
-	if (rockchip_get_uart_base() != 0)
+	if (rockchip_get_uart_base() != 0) {
 		console_16550_register(rockchip_get_uart_base(),
 				       rockchip_get_uart_clock(),
 				       rockchip_get_uart_baudrate(), &console);
 
-	VERBOSE("bl31_setup\n");
+		/*  springxu 0826 2026
+		* W0 (WiFi init for Windows): keep the BL31 UART console active in
+		* the runtime phase so that ATF NOTICE/ERROR messages (e.g. SDIO SMC
+		* handlers) remain visible after the OS takes over the serial port.
+		* Without CONSOLE_FLAG_RUNTIME the console is only usable during boot.
+		*/
+		console_set_scope(&console, CONSOLE_FLAG_BOOT | CONSOLE_FLAG_RUNTIME);
+	}
+
+	VERBOSE("bl31_setup console Scope BOOT and runtime\n");
 
 	bl31_params_parse_helper(arg0, &bl32_ep_info, &bl33_ep_info);
 }
