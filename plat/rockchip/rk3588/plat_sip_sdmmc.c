@@ -308,6 +308,51 @@ int plat_rk3588_sdmmc_set_signal_voltage(unsigned int microvolts)
 	return RK_SIP_E_NOT_IMPLEMENTED;
 }
 
+/*
+ * YL debug (2026-08-27): one-shot dump of the three values that both the
+ * firmware (RockchipPlatformLib SdioWifiInit/SdioBusInit) and the Windows
+ * ACPI PINC._REG method rely on, to prove what they mean on silicon.
+ * Triggered at EL3 by the dwcmshc regulator service chain
+ *   MshcRockchipSetVoltage -> RkSipSdmmcRegulatorEnableSet ->
+ *   RK_SIP_SDMMC_REGULATOR_ENABLE_SET (0x82000027),
+ * i.e. BEFORE Windows evaluates _REG -- so it validates the register
+ * layout/value semantics, not the ACPI-time write itself.
+ *
+ *  1. G3AL = GPIO3A_IOMUX_SEL_L @ 0xFD5F8060
+ *       expect low16 == 0x2222 : GPIO3_A0~A3 mux=2 (SDIO_D0~D3)
+ *  2. G3AH = GPIO3A_IOMUX_SEL_H @ 0xFD5F8064
+ *       expect low16 bits[7:0] == 0x22 : GPIO3_A4/A5 mux=2 (SDIO_CMD/CLK)
+ *       (bits[15:8] belong to A6/A7 which we never touch)
+ *  3. WL_REG_ON = GPIO0_C7 (pin 23, released-high):
+ *       SWPORT_DDR_H @ 0xFD8A000C bit7 = 1 (direction = output)
+ *       SWPORT_DR_H  @ 0xFD8A0004 bit7 = 1 (latched level = high/ON)
+ *       EXT_PORT     @ 0xFD8A0070 bit23 = actual pad level
+ */
+static void sdio_dump_gpio_regs_once(void)
+{
+	static unsigned int dumped;
+	unsigned int sel_l, sel_h, ddr_h, dr_h, ext_port;
+
+	// if (dumped != 0U) {
+	// 	return;
+	// }
+	// dumped = 1U;
+
+	sel_l = mmio_read_32(0xFD5F8060U);
+	sel_h = mmio_read_32(0xFD5F8064U);
+	ddr_h = mmio_read_32(0xFD8A000CU);
+	dr_h = mmio_read_32(0xFD8A0004U);
+	ext_port = mmio_read_32(0xFD8A0070U);
+
+	NOTICE("SDIO_CLK_PATCH(0x82000027): Times [%ud]\n", dumped);
+	NOTICE("SDIO_CLK_PATCH(0x82000027): G3AL(GPIOM.sel_l @0xFD5F8060)=0x%08x exp_low16=0x2222\n",
+	       sel_l);
+	NOTICE("SDIO_CLK_PATCH(0x82000027): G3AH(GPIOM.sel_h @0xFD5F8064)=0x%08x exp_bits[7:0]=0x22\n",
+	       sel_h);
+	NOTICE("SDIO_CLK_PATCH(0x82000027): WL_REG_ON(GPIO0_C7) dir_out=%u latch_high=%u pad_high=%u (exp 1/1/1)\n",
+	       (ddr_h >> 7) & 1U, (dr_h >> 7) & 1U, (ext_port >> 23) & 1U);
+}
+
 uintptr_t rk_sip_sdmmc_handler(uint32_t smc_fid,
 			       u_register_t x1,
 			       u_register_t x2,
@@ -370,6 +415,9 @@ uintptr_t rk_sip_sdmmc_handler(uint32_t smc_fid,
 	}
 	case RK_SIP_SDMMC_REGULATOR_ENABLE_GET: {
 		bool enable = false;
+		if ((uintptr_t)x1 == SDIO_BASE) {
+			sdio_dump_gpio_regs_once();
+		}
 
 		ret = rk_sip_sdmmc_regulator_enable_get(x1, x2, &enable);
 		if (!ret) {
@@ -380,6 +428,10 @@ uintptr_t rk_sip_sdmmc_handler(uint32_t smc_fid,
 		break;
 	}
 	case RK_SIP_SDMMC_REGULATOR_ENABLE_SET: {
+		if ((uintptr_t)x1 == SDIO_BASE) {
+			sdio_dump_gpio_regs_once();
+		}
+
 		ret = rk_sip_sdmmc_regulator_enable_set(x1, x2, x3);
 		SMC_RET1(handle, ret);
 		break;
