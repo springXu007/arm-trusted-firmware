@@ -1327,8 +1327,27 @@ void __dead2 rockchip_soc_sys_pd_pwr_dn_wfi(void)
 	psci_power_down_wfi();
 }
 
+/*
+ * YL fix (2026-09-02, crash #16): the first global soft reset below was
+ * observed to leave the SoC un-reset when the system was already wedged
+ * (Windows sdport bugcheck -> PSCI SYSTEM_RESET -> power domain map
+ * printed -> UART silent forever; only a physical power cycle recovered it).
+ * system_reset_init() (soc.c) already routes WDT expiry to a first global
+ * reset at every boot, so just start the countdown before the CRU reset:
+ * if the CRU write propagates (normal) the chip resets in microseconds;
+ * if it is wedged, the WDT resets the SoC within seconds.
+ * DW_apb_wdt: TORR 11 -> 2^27 ticks (~1.3s@100MHz / ~5.6s@24MHz); CR bit0=enable.
+ */
+static void arm_wdt_reset_fallback(void)
+{
+	mmio_write_32(WDT_S_BASE + 0x04U, 0x0BU);	/* WDT_TORR */
+	mmio_write_32(WDT_S_BASE + 0x00U, 0x01U);	/* WDT_CR: enable, reset mode */
+}
+
 void __dead2 rockchip_soc_soft_reset(void)
 {
+	arm_wdt_reset_fallback();
+
 	/* pll slow mode */
 	mmio_write_32(CRU_BASE + 0x280, 0x03ff0000);
 	mmio_write_32(BIGCORE0CRU_BASE + 0x280, 0x00030000);
@@ -1356,6 +1375,8 @@ void __dead2 rockchip_soc_soft_reset(void)
 
 void __dead2 rockchip_soc_system_off(void)
 {
+	arm_wdt_reset_fallback();
+
 	/* set pmic_sleep pin(gpio0_a2) to gpio mode */
 	mmio_write_32(PMU0IOC_BASE + 0, BITS_WITH_WMASK(0, 0xf, 8));
 

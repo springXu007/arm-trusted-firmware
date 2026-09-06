@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#include <arch_helpers.h>
 #include <common/debug.h>
 #include <common/runtime_svc.h>
 #include <drivers/delay_timer.h>
@@ -310,10 +311,30 @@ static int rk_sip_sdmmc_regulator_enable_get(uintptr_t controller_address,
 	return RK_SIP_E_NOT_IMPLEMENTED;
 }
 
+/*
+ * YL fix (2026-09-02, crash #16): debounce WL_REG_ON transitions. A wedged
+ * Windows restart path was observed to issue the same enable request up to
+ * 5 times in a burst; each full cycle (edge x2 + PLDO5 SPI writes + 210ms
+ * EL3 busy-wait) hammers the RK806 rail shared with eMMC. Skip redundant
+ * same-state requests within the window; real edges always run in full.
+ */
+#define RK_WL_REGON_DEBOUNCE_MS	2000U
+
+static bool wl_reg_on_is_high;
+static unsigned long long wl_reg_last_edge_ms;
+
+static unsigned long long tick_to_ms(void)
+{
+	return read_cntpct() / (read_cntfrq() / 1000ULL);
+}
+
 static int rk_sip_sdmmc_regulator_enable_set(uintptr_t controller_address,
 					     unsigned int id,
 					     bool enable)
 {
+	bool redundant;
+	unsigned long long now_ms;
+
 	/*
 	 * YL fix (2026-08-27): AP6275S needs a WL_REG_ON power cycle to
 	 * return to the CMD5-responsive ROM state. Once the card has been
@@ -338,14 +359,27 @@ static int rk_sip_sdmmc_regulator_enable_set(uintptr_t controller_address,
 	/* Direction: output (idempotent). */
 	mmio_write_32(GPIO0_SWPORT_DDR_H, WL_REG_ON_DDR_WRITE);
 
+	now_ms = tick_to_ms();
+	redundant = (wl_reg_on_is_high == enable) &&
+		    ((now_ms - wl_reg_last_edge_ms) < RK_WL_REGON_DEBOUNCE_MS);
+
+	if (redundant) {
+		NOTICE("SDIO WL_REG_ON: skip redundant transition (enable=%u)\n",
+		       (unsigned int)enable);
+		return RK_SIP_E_SUCCESS;
+	}
+
 	if (enable) {
 		mmio_write_32(GPIO0_SWPORT_DR_H, WL_REG_ON_DR_WRITE(0)); /* reset */
 		mdelay(10);
 		mmio_write_32(GPIO0_SWPORT_DR_H, WL_REG_ON_DR_WRITE(1)); /* release */
 		mdelay(200); /* module firmware boot */
+		wl_reg_on_is_high = true;
 	} else {
 		mmio_write_32(GPIO0_SWPORT_DR_H, WL_REG_ON_DR_WRITE(0)); /* off */
+		wl_reg_on_is_high = false;
 	}
+	wl_reg_last_edge_ms = tick_to_ms();
 
 	NOTICE("SDIO WL_REG_ON power cycle done (enable=%u)\n", (unsigned int)enable);
 
