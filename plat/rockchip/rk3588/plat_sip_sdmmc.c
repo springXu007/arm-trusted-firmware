@@ -325,7 +325,7 @@ static unsigned long long wl_reg_last_edge_ms;
 
 static unsigned long long tick_to_ms(void)
 {
-	return read_cntpct() / (read_cntfrq() / 1000ULL);
+	return read_cntpct_el0() / (read_cntfrq_el0() / 1000ULL);
 }
 
 static int rk_sip_sdmmc_regulator_enable_set(uintptr_t controller_address,
