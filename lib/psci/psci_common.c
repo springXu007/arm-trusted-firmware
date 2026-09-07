@@ -1116,7 +1116,13 @@ void psci_print_power_domain_map(void)
 		"OFF",
 	};
 
-	INFO("PSCI Power Domain Map:\n");
+	/*
+	 * YL debug (2026-09-07): stamp with generic-timer ms since BL31 cold
+	 * boot so serial-log readers can measure the silent gap preceding
+	 * this dump (e.g. Windows shutdown hang -> ACPI BSOD -> reset).
+	 */
+	INFO("PSCI Power Domain Map (t=%llums since BL31 boot):\n",
+	     (unsigned long long)(read_cntpct_el0() / (read_cntfrq_el0() / 1000ULL)));
 	for (idx = 0; idx < (PSCI_NUM_PWR_DOMAINS - psci_plat_core_count);
 							idx++) {
 		state_type = find_local_state_type(

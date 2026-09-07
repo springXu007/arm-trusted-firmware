@@ -20,6 +20,14 @@
 
 #include "plat_sip_sdmmc.h"
 
+/*
+ * YL debug (2026-09-07): stamp WiFi power/clock prints with generic-timer
+ * milliseconds since BL31 cold boot. Makes serial-log gaps measurable,
+ * e.g. the shutdown hang between the last WL_REG_ON cycle print and the
+ * PSCI power-domain map dump. Definition sits at the debounce block.
+ */
+static unsigned long long tick_to_ms(void);
+
 /* This is board-specific (see rk3588_reference_pmic) */
 #pragma weak plat_rk3588_sdmmc_set_signal_voltage
 
@@ -164,7 +172,8 @@ static int get_sdmmc_card_clock_scmi_id(uintptr_t controller_address,
 		switch (id) {
 		case RK_SIP_SDMMC_CLOCK_ID_MSHC_CIU:
 			*scmi_id = SCMI_CCLK_SDIO;
-			NOTICE("SDIO_CLK_PATCH: SDIO clock service active\n");
+			NOTICE("SDIO_CLK_PATCH: SDIO clock service active (t=%llums)\n",
+			       tick_to_ms());
 			return RK_SIP_E_SUCCESS;
 		}
 		break;
@@ -364,8 +373,8 @@ static int rk_sip_sdmmc_regulator_enable_set(uintptr_t controller_address,
 		    ((now_ms - wl_reg_last_edge_ms) < RK_WL_REGON_DEBOUNCE_MS);
 
 	if (redundant) {
-		NOTICE("SDIO WL_REG_ON: skip redundant transition (enable=%u)\n",
-		       (unsigned int)enable);
+		NOTICE("SDIO WL_REG_ON: skip redundant transition (enable=%u, t=%llums)\n",
+		       (unsigned int)enable, tick_to_ms());
 		return RK_SIP_E_SUCCESS;
 	}
 
@@ -381,7 +390,8 @@ static int rk_sip_sdmmc_regulator_enable_set(uintptr_t controller_address,
 	}
 	wl_reg_last_edge_ms = tick_to_ms();
 
-	NOTICE("SDIO WL_REG_ON power cycle done (enable=%u)\n", (unsigned int)enable);
+	NOTICE("SDIO WL_REG_ON power cycle done (enable=%u, t=%llums)\n",
+	       (unsigned int)enable, tick_to_ms());
 
 	return RK_SIP_E_SUCCESS;
 }
@@ -427,7 +437,8 @@ static void sdio_dump_gpio_regs_once(void)
 	dr_h = mmio_read_32(0xFD8A0004U);
 	ext_port = mmio_read_32(0xFD8A0070U);
 
-	NOTICE("SDIO_CLK_PATCH(0x82000027): Times [%ud]\n", dumped);
+	NOTICE("SDIO_CLK_PATCH(0x82000027): Times [%ud] (t=%llums)\n", dumped,
+	       tick_to_ms());
 	NOTICE("SDIO_CLK_PATCH(0x82000027): G3AL(GPIOM.sel_l @0xFD5F8060)=0x%08x exp_low16=0x2222\n",
 	       sel_l);
 	NOTICE("SDIO_CLK_PATCH(0x82000027): G3AH(GPIOM.sel_h @0xFD5F8064)=0x%08x exp_bits[7:0]=0x22\n",
