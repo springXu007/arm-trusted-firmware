@@ -4,10 +4,8 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <arch_helpers.h>
 #include <common/debug.h>
 #include <common/runtime_svc.h>
-#include <drivers/delay_timer.h>
 #include <drivers/scmi-msg.h>
 #include <lib/mmio.h>
 
@@ -19,14 +17,6 @@
 #include <rk3588_clk.h>
 
 #include "plat_sip_sdmmc.h"
-
-/*
- * YL debug (2026-09-07): stamp WiFi power/clock prints with generic-timer
- * milliseconds since BL31 cold boot. Makes serial-log gaps measurable,
- * e.g. the shutdown hang between the last WL_REG_ON cycle print and the
- * PSCI power-domain map dump. Definition sits at the debounce block.
- */
-static unsigned long long tick_to_ms(void);
 
 /* This is board-specific (see rk3588_reference_pmic) */
 #pragma weak plat_rk3588_sdmmc_set_signal_voltage
@@ -57,19 +47,6 @@ static unsigned long long tick_to_ms(void);
 	((CRU_SD_DELAY_ELEMENT_PS_MIN + CRU_SD_DELAY_ELEMENT_PS_MAX) / 2)
 
 #define CRU_SD_CLKGEN_DIV	2
-
-/*
- * WL_REG_ON (WiFi REG_ON, active-low) = GPIO0_C7 = pin 23 of GPIO0.
- * GPIO0 bank base 0xFD8A0000: SWPORT_DR_H @ +0x04 (pin16-31 data),
- * SWPORT_DDR_H @ +0x0C (pin16-31 direction). HIWORD-mask write style:
- * bits[31:16] enable writing of the corresponding bits[15:0] (same
- * semantics as edk2-rockchip GpioLib GPIO_WRITE_MASK/GPIO_VALUE_MASK).
- */
-#define GPIO0_SWPORT_DR_H	0xFD8A0004U
-#define GPIO0_SWPORT_DDR_H	0xFD8A000CU
-#define WL_REG_ON_BIT		BIT(7)		/* pin 23 -> H register bit 7 */
-#define WL_REG_ON_DDR_WRITE	((WL_REG_ON_BIT << 16) | WL_REG_ON_BIT)
-#define WL_REG_ON_DR_WRITE(hi)	((WL_REG_ON_BIT << 16) | ((hi) ? WL_REG_ON_BIT : 0U))
 
 static unsigned int cru_sd_get_phase(unsigned int con_reg,
 				     unsigned int rate_hz)
@@ -318,75 +295,11 @@ static int rk_sip_sdmmc_regulator_enable_get(uintptr_t controller_address,
 	return RK_SIP_E_NOT_IMPLEMENTED;
 }
 
-/*
- * YL fix (2026-09-02, crash #16): debounce WL_REG_ON transitions. A wedged
- * Windows restart path was observed to issue the same enable request up to
- * 5 times in a burst; each full cycle (edge x2 + PLDO5 SPI writes + 210ms
- * EL3 busy-wait) hammers the RK806 rail shared with eMMC. Skip redundant
- * same-state requests within the window; real edges always run in full.
- */
-#define RK_WL_REGON_DEBOUNCE_MS	2000U
-
-static bool wl_reg_on_is_high;
-static unsigned long long wl_reg_last_edge_ms;
-
-static unsigned long long tick_to_ms(void)
-{
-	return read_cntpct_el0() / (read_cntfrq_el0() / 1000ULL);
-}
-
 static int rk_sip_sdmmc_regulator_enable_set(uintptr_t controller_address,
 					     unsigned int id,
 					     bool enable)
 {
-	bool redundant;
-	unsigned long long now_ms;
-
-	/*
-	 * YL fix (2026-08-27): AP6275S needs a WL_REG_ON power cycle to
-	 * return to the CMD5-responsive ROM state. Once the card has been
-	 * enumerated (e.g. by the UEFI diagnostic engine M2-M4), CMD0 alone
-	 * cannot bring it back; only a WL_REG_ON low->high transition re-arms
-	 * the module bootloader.
-	 *
-	 * dwcmshc triggers this SMC (0x82000027) from MshcSlotInitialize /
-	 * SdResetHost / SdSetVoltage, i.e. always before any enumeration
-	 * command is sent. Running the full sequence here and busy-waiting
-	 * at EL3 (no ACPI time budget, unlike SDIO._PS0 where Sleep() caused
-	 * ACPI_BIOS_ERROR) guarantees that the card is ready by the time
-	 * the SMC returns, so the subsequent CMD0/CMD5 sequence hits a
-	 * freshly powered card. Each call re-runs the cycle, which also
-	 * covers driver reload / D3->D0 transitions.
-	 */
-	if ((controller_address != SDIO_BASE) ||
-	    (id != RK_SIP_SDMMC_REGULATOR_ID_SUPPLY)) {
-		return RK_SIP_E_NOT_IMPLEMENTED;
-	}
-
-	/* Direction: output (idempotent). */
-	mmio_write_32(GPIO0_SWPORT_DDR_H, WL_REG_ON_DDR_WRITE);
-
-	now_ms = tick_to_ms();
-	redundant = (wl_reg_on_is_high == enable) &&
-		    ((now_ms - wl_reg_last_edge_ms) < RK_WL_REGON_DEBOUNCE_MS);
-
-	if (redundant) {
-		return RK_SIP_E_SUCCESS;
-	}
-
-	if (enable) {
-		mmio_write_32(GPIO0_SWPORT_DR_H, WL_REG_ON_DR_WRITE(0)); /* reset */
-		mdelay(10);
-		mmio_write_32(GPIO0_SWPORT_DR_H, WL_REG_ON_DR_WRITE(1)); /* release */
-		mdelay(200); /* module firmware boot */
-		wl_reg_on_is_high = true;
-	} else {
-		mmio_write_32(GPIO0_SWPORT_DR_H, WL_REG_ON_DR_WRITE(0)); /* off */
-		wl_reg_on_is_high = false;
-	}
-	wl_reg_last_edge_ms = tick_to_ms();
-
-	return RK_SIP_E_SUCCESS;
+	return RK_SIP_E_NOT_IMPLEMENTED;
 }
 
 int plat_rk3588_sdmmc_set_signal_voltage(unsigned int microvolts)
