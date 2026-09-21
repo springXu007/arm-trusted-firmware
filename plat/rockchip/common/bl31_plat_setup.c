@@ -21,6 +21,34 @@
 static entry_point_info_t bl32_ep_info;
 static entry_point_info_t bl33_ep_info;
 
+/*
+ * YL 2026-09-19 (KD fix)
+ *
+ * UART2 (0xFEB50000, 1500000 bps) is SHARED between:
+ *   - the Windows kernel debugger (WinDbg, via SPCR/DBG2), and
+ *   - this BL31 console.
+ *
+ * Registering the console with CONSOLE_FLAG_RUNTIME keeps BL31 writing to
+ * UART2 *after* the OS has taken over the port. While Windows boots, every
+ * secondary-core PSCI bring-up emits
+ *     "BL31: cortex_a76: CPU workaround for erratum N was missing!" (WARNING)
+ * and every RK806 regulator SMC emits
+ *     "common_set_voltage: cs_id=0, pldo=5, uvolt=3300000" (INFO)
+ * plus SDIO_SLK_PATCH (NOTICE). These land in the middle of the KD handshake
+ * and corrupt it.
+ *
+ * Measured from the 2026-09-19 serial log: after ExitBootServices the port
+ * carried 53 KD "0000" poll packets interleaved with 8 BL31 lines, so the
+ * handshake never completed and WinDbg never got a kernel session
+ * (winload debugging worked; the kernel session never appeared).
+ *
+ *   0 = BOOT only   -> BL31 goes silent once BL33 starts. WinDbg KD works.
+ *   1 = BOOT|RUNTIME-> ATF runtime logs stay visible (WiFi work); KD broken.
+ */
+#ifndef YL_BL31_RUNTIME_CONSOLE
+#define YL_BL31_RUNTIME_CONSOLE  0
+#endif
+
 /*******************************************************************************
  * Return a pointer to the 'entry_point_info' structure of the next image for
  * the security state specified. BL33 corresponds to the non-secure image type
@@ -72,7 +100,11 @@ void bl31_early_platform_setup2(u_register_t arg0, u_register_t arg1,
 		* handlers) remain visible after the OS takes over the serial port.
 		* Without CONSOLE_FLAG_RUNTIME the console is only usable during boot.
 		*/
+#if YL_BL31_RUNTIME_CONSOLE
 		console_set_scope(&console, CONSOLE_FLAG_BOOT | CONSOLE_FLAG_RUNTIME);
+#else
+		console_set_scope(&console, CONSOLE_FLAG_BOOT);
+#endif
 	}
 
 	VERBOSE("bl31_setup console Scope BOOT and runtime\n");
